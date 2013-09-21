@@ -13,3 +13,9 @@ Example:
     trips.each do |trip|
         puts "Route: #{trip[:route_no]} to #{trip[:destination]} arrives in #{trip[:adjusted_schedule_time]} minutes"
     end
+
+History:
+
+* 0.0.2 - Fix bug where we were adding to the `adjusted_schedule_time` for cached trips, when we
+          should have been subracting from it.
+* 0.0.1 - Initial release.

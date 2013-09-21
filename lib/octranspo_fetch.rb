@@ -117,13 +117,17 @@ class OCTranspo
                     time_delta = Time.now.to_i - trips[:time]
                     route_obj[:request_processing_time] += time_delta
                     route_obj[:trips] = deep_copy(trips[:trips])
-                    route_obj[:trips].each do |trip|
                     route_obj[:cached] = true
-                        trip[:adjusted_schedule_time] += (time_delta.to_f / 60).round
+                    route_obj[:trips].each do |trip|
+                        trip[:adjusted_schedule_time] -= (time_delta.to_f / 60).round
                         if trip[:adjustment_age] > 0
                             trip[:adjustment_age] += time_delta.to_f / 60
                         end
                     end
+
+                    # Filter out results with negative arrival times, since they've probably
+                    # already gone by.
+                    route_obj[:trips].select! { |trip| trip[:adjusted_schedule_time] >= 0 }
 
                 else
                     # No data in the cache... Hrm...
@@ -148,7 +152,8 @@ class OCTranspo
     # `{stop, stop_description, route_no, route_label, direction, arrival_in_minutes, ...}` objects.
     #
     # `...` is any data that would be available from a `trip` object from
-    # `get_next_trips_for_stop()` (e.g. gps_speed, latitude, longitude, etc...)
+    # `get_next_trips_for_stop()` (e.g. gps_speed, latitude, longitude, etc...)  Returned results
+    # are sorted in ascending arrival time.
     #
     # Arguments:
     #     stop: (String) The stop number.
