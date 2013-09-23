@@ -15,19 +15,25 @@ class OCTranspo
     def initialize(options)
         @app_id = options[:application_id]
         @app_key = options[:application_key]
-        @trips_cache = LruRedux::Cache.new(TRIPS_CACHE_SIZE)
+        @next_trips_cache = LruRedux::Cache.new(NEXT_TRIPS_CACHE_SIZE)
         @route_summary_cache = LruRedux::Cache.new(ROUTE_CACHE_SIZE)
         @api_calls = 0
+        @cache_hits = 0
+        @cache_misses = 0
     end
 
     def clear_cache()
-        @trips_cache.clear()
+        @next_trips_cache.clear()
         @route_summary_cache.clear()
     end
 
     # Returns the number of API calls made by this instance since it was created.
     def requests()
         return @api_calls
+    end
+
+    def cache_stats()
+        return {hits: @cache_hits, misses: @cache_misses}
     end
 
     # Get a list of routes for a specific stop.
@@ -37,10 +43,19 @@ class OCTranspo
     #
     # Arguments:
     #     stop: (String) The stop number.
+    #     options[:max_cache_time]: (Integer) Maximum cache age, in seconds.  If cached data is
+    #       available and is newer than this, then the cached value will be returned.  Defaults to
+    #       one day.
     #
-    def get_route_summary_for_stop(stop)
+    def get_route_summary_for_stop(stop, options={})
+        max_cache_time = (options[:max_cache_time] or 60*60*24)
         cached_result = @route_summary_cache[stop]
-        if !cached_result.nil? then return cached_result end
+        if !cached_result.nil? and ((cached_result[:time] + max_cache_time) > Time.now.to_i)
+            @cache_hits += 1
+            return cached_result[:route_summary]
+        end
+
+        @cache_misses += 1
 
         xresult = fetch "GetRouteSummaryForStop", "stopNo=#{stop}"
 
@@ -63,7 +78,10 @@ class OCTranspo
             raise "No routes found"
         end
 
-        @route_summary_cache[stop] = result
+        @route_summary_cache[stop] = {
+            route_summary: result,
+            time: Time.now.to_i
+        }
 
         return result
     end
@@ -74,15 +92,32 @@ class OCTranspo
     # Arguments:
     #     stop: (String) The stop number.
     #     route_no: (String) The route number.
+    #     options[:max_cache_time]: (Integer) Maximum cache age, in seconds.  If cached data is
+    #       available and is newer than this, then the cached value will be returned.  Defaults
+    #       to five minutes.
     #
-    def get_next_trips_for_stop(stop, route_no)
+    def get_next_trips_for_stop(stop, route_no, options={})
+        max_cache_time = (options[:max_cache_time] or 60*5)
+
+        # Return result from cache, if available
+        cache_key = "#{stop}-#{route_no}"
+        cached_result = @next_trips_cache[cache_key]
+        if !cached_result.nil? and ((cached_result[:time] + max_cache_time) > Time.now.to_i)
+            @cache_hits += 1
+            return adjust_cached_trip_times(cached_result[:next_trips])
+        end
+        @cache_misses += 1
+
         xresult = fetch "GetNextTripsForStop", "stopNo=#{stop}&routeNo=#{route_no}"
 
         result = {
             stop: get_value(xresult, "t:StopNo"),
             stop_description: get_value(xresult, "t:StopLabel"),
+            time: Time.now,
             routes: []
         }
+
+        found_data = false
 
         xresult.xpath('t:Route/t:RouteDirection', OCT_NS).each do |route|
             get_error(route, "Error for route: #{route_no}")
@@ -109,39 +144,25 @@ class OCTranspo
                 })
             end
 
-            cache_key = "#{stop}-#{route_obj[:route]}-#{route_obj[:direction]}"
-            if route_obj[:trips].length == 0
-                # Sometimes OC Transpo doesn't return any data.  When this happens, fetch data from the cache.
-                trips = @trips_cache[cache_key]
-                if !trips.nil?
-                    time_delta = Time.now.to_i - trips[:time]
-                    route_obj[:request_processing_time] += time_delta
-                    route_obj[:trips] = deep_copy(trips[:trips])
-                    route_obj[:cached] = true
-                    route_obj[:trips].each do |trip|
-                        trip[:adjusted_schedule_time] -= (time_delta.to_f / 60).round
-                        if trip[:adjustment_age] > 0
-                            trip[:adjustment_age] += time_delta.to_f / 60
-                        end
-                    end
-
-                    # Filter out results with negative arrival times, since they've probably
-                    # already gone by.
-                    route_obj[:trips].select! { |trip| trip[:adjusted_schedule_time] >= 0 }
-
-                else
-                    # No data in the cache... Hrm...
-                end
-
-            else
-                # Cache the trips for later
-                @trips_cache[cache_key] = {
-                    time: Time.now.to_i,
-                    trips: route_obj[:trips]
-                }
+            if route_obj[:trips].length != 0
+                # Assume that if any trips are filled in, then all the trips will be filled in?
+                # Is this a safe assumption?
+                found_data = true
             end
 
             result[:routes].push route_obj
+        end
+
+        # Sometimes OC Transpo doesn't return any data for a route, even though it should.  When
+        # this happens, if we have cached data, we use that, even if it's slightly stale.
+        if !found_data and !cached_result.nil?
+            # Use the cached data, even if it's stale
+            result = adjust_cached_trip_times(cached_result[:next_trips])
+        else
+            @next_trips_cache[cache_key] = {
+                next_trips: result,
+                time: Time.now.to_i
+            }
         end
 
 
@@ -199,14 +220,13 @@ class OCTranspo
 
     BASE_URL = "https://api.octranspo1.com/v1.1"
     OCT_NS = {'oct' => 'http://octranspo.com', 't' => 'http://tempuri.org/'}
-    TRIPS_CACHE_SIZE = 100
+    NEXT_TRIPS_CACHE_SIZE = 100
     ROUTE_CACHE_SIZE = 100
 
     # Fetch and parse some data from the OC-Transpo API.  Returns a nokogiri object for
     # the Result within the XML document.
     def fetch(resource, params)
         @api_calls = (@api_calls + 1)
-
         response = RestClient.post("#{BASE_URL}/#{resource}",
             "appID=#{@app_id}&apiKey=#{@app_key}&#{params}")
 
@@ -259,5 +279,30 @@ class OCTranspo
     def deep_copy(o)
         Marshal.load(Marshal.dump(o))
     end
-end
 
+    # When returning cached trips, we need to adjust the `:adjustment_age` and
+    # `:adjusted_schedule_time` of each entry to reflect how long the object has been
+    # sitting in the cache.
+    def adjust_cached_trip_times(cached_routes)
+
+        cached_routes = deep_copy cached_routes
+        cached_routes[:cached] = true
+
+        time_delta = Time.now.to_i - cached_routes[:time].to_i
+        cached_routes[:routes].each do |route_obj|
+            route_obj[:trips].each do |trip|
+                trip[:adjusted_schedule_time] -= (time_delta.to_f / 60).round
+                if trip[:adjustment_age] > 0
+                    trip[:adjustment_age] += time_delta.to_f / 60
+                end
+            end
+
+            # Filter out results with negative arrival times, since they've probably
+            # already gone by.
+            route_obj[:trips].select! { |trip| trip[:adjusted_schedule_time] >= 0 }
+        end
+
+        return cached_routes
+    end
+
+end

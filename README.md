@@ -16,6 +16,7 @@ Example:
 
 History:
 
+* 0.0.3 - Add better caching support.
 * 0.0.2 - Fix bug where we were adding to the `adjusted_schedule_time` for cached trips, when we
           should have been subracting from it.
 * 0.0.1 - Initial release.
