@@ -54,7 +54,6 @@ class OCTranspo
             @cache_hits += 1
             return cached_result[:route_summary]
         end
-
         @cache_misses += 1
 
         xresult = fetch "GetRouteSummaryForStop", "stopNo=#{stop}"
@@ -155,7 +154,7 @@ class OCTranspo
 
         # Sometimes OC Transpo doesn't return any data for a route, even though it should.  When
         # this happens, if we have cached data, we use that, even if it's slightly stale.
-        if !found_data and !cached_result.nil?
+        if !found_data and !cached_result.nil? and (get_trip_count(cached_result[:next_trips]) > 0)
             # Use the cached data, even if it's stale
             result = adjust_cached_trip_times(cached_result[:next_trips])
         else
@@ -239,6 +238,18 @@ class OCTranspo
         get_error(xresult, "Error for #{params}:")
 
         return xresult
+    end
+
+    # Count the number of trips in a result from OC Transpo
+    def get_trip_count(routes)
+        answer = 0
+        if !routes.nil?
+            routes[:routes].each do |route|
+                answer += route[:trips].length
+            end
+        end
+
+        return answer
     end
 
     # Return a single child from a nokogiri document.

@@ -1,7 +1,7 @@
 Gem::Specification.new do |s|
   s.name        = 'octranspo_fetch'
-  s.version     = '0.0.3'
-  s.date        = '2013-09-23'
+  s.version     = '0.0.4'
+  s.date        = '2013-09-24'
   s.summary     = "Fetch data from OC Tranpo API"
   s.description = "A simple wrapper around the OC Transpo API with some minimal caching."
   s.authors     = ["Jason Walton"]

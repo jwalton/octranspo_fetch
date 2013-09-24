@@ -16,6 +16,8 @@ Example:
 
 History:
 
+* 0.0.4 - Better differentiate between getting back bad results from OC Transpo vs. getting
+          back no results.
 * 0.0.3 - Add better caching support.
 * 0.0.2 - Fix bug where we were adding to the `adjusted_schedule_time` for cached trips, when we
           should have been subracting from it.
