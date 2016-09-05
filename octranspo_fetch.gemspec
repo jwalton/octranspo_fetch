@@ -1,10 +1,10 @@
 Gem::Specification.new do |s|
   s.name        = 'octranspo_fetch'
-  s.version     = '0.0.4'
-  s.date        = '2013-09-24'
+  s.version     = '0.0.5'
+  s.date        = '2016-09-05'
   s.summary     = "Fetch data from OC Tranpo API"
   s.description = "A simple wrapper around the OC Transpo API with some minimal caching."
-  s.authors     = ["Jason Walton"]
+  s.authors     = ["Jason Walton", "Kevin Ross"]
   s.files       = ["lib/octranspo_fetch.rb"]
   s.homepage    =
     'http://rubygems.org/gems/octranspo_fetch'
