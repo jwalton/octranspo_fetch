@@ -85,6 +85,85 @@ class OCTranspo
         return result
     end
 
+    # Get the next three trips of all routes for the given stop.  Note this may return data f
+    # or the same route number in multiple headings.
+    #
+    # Arguments:
+    #     stop: (String) The stop number.
+    #     options[:max_cache_time]: (Integer) Maximum cache age, in seconds.  If cached data is
+    #       available and is newer than this, then the cached value will be returned.  Defaults
+    #       to five minutes.
+    #
+    def get_next_trips_for_stop(stop, options={})
+        max_cache_time = (options[:max_cache_time] or 60*5)
+
+        # Return result from cache, if available
+        cache_key = "#{stop}"
+        cached_result = @next_trips_cache[cache_key]
+        if !cached_result.nil? and ((cached_result[:time] + max_cache_time) > Time.now.to_i)
+            @cache_hits += 1
+            return adjust_cached_trip_times(cached_result[:next_trips])
+        end
+        @cache_misses += 1
+
+        xresult = fetch "GetNextTripsForStopAllRoutes", "stopNo=#{stop}", "GetRouteSummaryForStop"
+
+        result = {
+            stop: get_value(xresult, "t:StopNo"),
+            stop_description: get_value(xresult, "t:StopDescription"),
+            time: Time.now,
+            routes: []
+        }
+
+        found_data = false
+        xresult.xpath('t:Routes/t:Route', OCT_NS).each do |route|
+            get_error(route, "Error for route")
+
+            route_obj = {
+                cached: false,
+                route: get_value(route, "t:RouteNo"),
+                route_label: get_value(route, "t:RouteHeading"),
+                direction: get_value(route, "t:Direction"),
+                trips: []
+            }
+            route.xpath('t:Trips/t:Trip', OCT_NS).each do |trip|
+                route_obj[:trips].push({
+                    destination: get_value(trip, "t:TripDestination"), # e.g. "Barhaven"
+                    start_time: get_value(trip, "t:TripStartTime"), # e.g. "14:25" TODO: parse to time
+                    adjusted_schedule_time: get_value(trip, "t:AdjustedScheduleTime").to_i, # Adjusted schedule time in minutes
+                    adjustment_age: get_value(trip, "t:AdjustmentAge").to_f, # Time since schedule was adjusted in minutes
+                    last_trip: (get_value(trip, "t:LastTripOfSchedule") == "true"),
+                    bus_type: get_value(trip, "t:BusType"),
+                    gps_speed: get_value(trip, "t:GPSSpeed").to_f,
+                    latitude: get_value(trip, "t:Latitude").to_f,
+                    longitude: get_value(trip, "t:Longitude").to_f
+                })
+            end
+
+            if route_obj[:trips].length != 0
+                # Assume that if any trips are filled in, then all the trips will be filled in?
+                # Is this a safe assumption?
+                found_data = true
+            end
+
+            result[:routes].push route_obj
+        end
+
+        # Sometimes OC Transpo doesn't return any data for a route, even though it should.  When
+        # this happens, if we have cached data, we use that, even if it's slightly stale.
+        if !found_data and !cached_result.nil? and (get_trip_count(cached_result[:next_trips]) > 0)
+            # Use the cached data, even if it's stale
+            result = adjust_cached_trip_times(cached_result[:next_trips])
+        else
+            @next_trips_cache[cache_key] = {
+                next_trips: result,
+                time: Time.now.to_i
+            }
+        end
+
+
+        return result
+    end
     # Get the next three trips for the given stop.  Note this may return data for the same route
     # number in multiple headings.
     #
@@ -95,7 +174,7 @@ class OCTranspo
     #       available and is newer than this, then the cached value will be returned.  Defaults
     #       to five minutes.
     #
-    def get_next_trips_for_stop(stop, route_no, options={})
+    def get_next_trips_for_stop_and_route(stop, route_no, options={})
         max_cache_time = (options[:max_cache_time] or 60*5)
 
         # Return result from cache, if available
@@ -217,20 +296,22 @@ class OCTranspo
 
     private
 
-    BASE_URL = "https://api.octranspo1.com/v1.1"
+    BASE_URL = "https://api.octranspo1.com/v1.2"
     OCT_NS = {'oct' => 'http://octranspo.com', 't' => 'http://tempuri.org/'}
     NEXT_TRIPS_CACHE_SIZE = 100
     ROUTE_CACHE_SIZE = 100
 
     # Fetch and parse some data from the OC-Transpo API.  Returns a nokogiri object for
     # the Result within the XML document.
-    def fetch(resource, params)
+    def fetch(resource, params, alt_resource = nil)
         @api_calls = (@api_calls + 1)
         response = RestClient.post("#{BASE_URL}/#{resource}",
             "appID=#{@app_id}&apiKey=#{@app_key}&#{params}")
-
+        if alt_resource.nil?
+          alt_resource = resource
+        end
         doc = Nokogiri::XML(response.body)
-        xresult = doc.xpath("//oct:#{resource}Result", OCT_NS)
+        xresult = doc.xpath("//oct:#{alt_resource}Result", OCT_NS)
         if xresult.length == 0
             raise "Error: No reply for #{resource}"
         end
