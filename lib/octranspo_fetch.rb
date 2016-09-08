@@ -48,7 +48,7 @@ class OCTranspo
     #       one day.
     #
     def get_route_summary_for_stop(stop, options={})
-        max_cache_time = (options[:max_cache_time] or 60*60*24)
+        max_cache_time = (options[:max_cache_time] or 60*5)
         cached_result = @route_summary_cache[stop]
         if !cached_result.nil? and ((cached_result[:time] + max_cache_time) > Time.now.to_i)
             @cache_hits += 1
@@ -85,127 +85,69 @@ class OCTranspo
         return result
     end
 
-    # Get the next three trips of all routes for the given stop.  Note this may return data f
-    # or the same route number in multiple headings.
-    #
-    # Arguments:
-    #     stop: (String) The stop number.
-    #     options[:max_cache_time]: (Integer) Maximum cache age, in seconds.  If cached data is
-    #       available and is newer than this, then the cached value will be returned.  Defaults
-    #       to five minutes.
-    #
-    def get_next_trips_for_stop(stop, options={})
-        max_cache_time = (options[:max_cache_time] or 60*5)
-
-        # Return result from cache, if available
-        cache_key = "#{stop}"
-        cached_result = @next_trips_cache[cache_key]
-        if !cached_result.nil? and ((cached_result[:time] + max_cache_time) > Time.now.to_i)
-            @cache_hits += 1
-            return adjust_cached_trip_times(cached_result[:next_trips])
-        end
-        @cache_misses += 1
-
-        xresult = fetch "GetNextTripsForStopAllRoutes", "stopNo=#{stop}", "GetRouteSummaryForStop"
-
-        result = {
-            stop: get_value(xresult, "t:StopNo"),
-            stop_description: get_value(xresult, "t:StopDescription"),
-            time: Time.now,
-            routes: []
-        }
-
-        found_data = false
-        xresult.xpath('t:Routes/t:Route', OCT_NS).each do |route|
-            get_error(route, "Error for route")
-
-            route_obj = {
-                cached: false,
-                route: get_value(route, "t:RouteNo"),
-                route_label: get_value(route, "t:RouteHeading"),
-                direction: get_value(route, "t:Direction"),
-                trips: []
-            }
-            route.xpath('t:Trips/t:Trip', OCT_NS).each do |trip|
-                route_obj[:trips].push({
-                    destination: get_value(trip, "t:TripDestination"), # e.g. "Barhaven"
-                    start_time: get_value(trip, "t:TripStartTime"), # e.g. "14:25" TODO: parse to time
-                    adjusted_schedule_time: get_value(trip, "t:AdjustedScheduleTime").to_i, # Adjusted schedule time in minutes
-                    adjustment_age: get_value(trip, "t:AdjustmentAge").to_f, # Time since schedule was adjusted in minutes
-                    last_trip: (get_value(trip, "t:LastTripOfSchedule") == "true"),
-                    bus_type: get_value(trip, "t:BusType"),
-                    gps_speed: get_value(trip, "t:GPSSpeed").to_f,
-                    latitude: get_value(trip, "t:Latitude").to_f,
-                    longitude: get_value(trip, "t:Longitude").to_f
-                })
-            end
-
-            if route_obj[:trips].length != 0
-                # Assume that if any trips are filled in, then all the trips will be filled in?
-                # Is this a safe assumption?
-                found_data = true
-            end
-
-            result[:routes].push route_obj
-        end
-
-        # Sometimes OC Transpo doesn't return any data for a route, even though it should.  When
-        # this happens, if we have cached data, we use that, even if it's slightly stale.
-        if !found_data and !cached_result.nil? and (get_trip_count(cached_result[:next_trips]) > 0)
-            # Use the cached data, even if it's stale
-            result = adjust_cached_trip_times(cached_result[:next_trips])
-        else
-            @next_trips_cache[cache_key] = {
-                next_trips: result,
-                time: Time.now.to_i
-            }
-        end
-
-
-        return result
-    end
     # Get the next three trips for the given stop.  Note this may return data for the same route
     # number in multiple headings.
     #
     # Arguments:
     #     stop: (String) The stop number.
-    #     route_no: (String) The route number.
+    #     route_no: (String) The route number, optional. If nil (default), get all routes.
     #     options[:max_cache_time]: (Integer) Maximum cache age, in seconds.  If cached data is
     #       available and is newer than this, then the cached value will be returned.  Defaults
     #       to five minutes.
     #
-    def get_next_trips_for_stop_and_route(stop, route_no, options={})
+    def get_next_trips_for_stop(stop, route_no=nil, options={})
         max_cache_time = (options[:max_cache_time] or 60*5)
 
         # Return result from cache, if available
-        cache_key = "#{stop}-#{route_no}"
+        cache_key = "#{stop}-#{route_no.to_s}"
         cached_result = @next_trips_cache[cache_key]
         if !cached_result.nil? and ((cached_result[:time] + max_cache_time) > Time.now.to_i)
             @cache_hits += 1
             return adjust_cached_trip_times(cached_result[:next_trips])
         end
         @cache_misses += 1
+        if route_no.nil?
+          parts = {
+            :method => "GetNextTripsForStopAllRoutes",
+            :args => "stopNo=#{stop}",
+            :alt_resource => "GetRouteSummaryForStop",
+            :stop_description => "t:StopDescription",
+            :route_xpath => 't:Routes/t:Route',
+            :route_error => "Error for route",
+            :route_label => "t:RouteHeading"
+          }
+        else
+          parts = {
+            :method => "GetNextTripsForStop",
+            :args => "stopNo=#{stop}&routeNo=#{route_no}",
+            :alt_resource => nil,
+            :stop_description => "t:StopLabel",
+            :route_xpath => 't:Route/t:RouteDirection',
+            :route_error => "Error for route: #{route_no}",
+            :route_label => "t:RouteLabel"
+          }
+        end
 
-        xresult = fetch "GetNextTripsForStop", "stopNo=#{stop}&routeNo=#{route_no}"
+        xresult = fetch parts[:method], parts[:args], parts[:alt_resource]
 
         result = {
             stop: get_value(xresult, "t:StopNo"),
-            stop_description: get_value(xresult, "t:StopLabel"),
+            stop_description: get_value(xresult, parts[:stop_description]),
             time: Time.now,
             routes: []
         }
 
         found_data = false
 
-        xresult.xpath('t:Route/t:RouteDirection', OCT_NS).each do |route|
-            get_error(route, "Error for route: #{route_no}")
+        xresult.xpath(parts[:route_xpath], OCT_NS).each do |route|
+            get_error(route, parts[:route_error])
 
             route_obj = {
                 cached: false,
                 route: get_value(route, "t:RouteNo"),
-                route_label: get_value(route, "t:RouteLabel"),
+                route_label: get_value(route, parts[:route_label]),
                 direction: get_value(route, "t:Direction"),
-                request_processing_time: Time.parse(get_value(route, "t:RequestProcessingTime")),
+                request_processing_time: route_no.nil? ? nil : Time.parse(get_value(route, "t:RequestProcessingTime")),
                 trips: []
             }
             route.xpath('t:Trips/t:Trip', OCT_NS).each do |trip|
