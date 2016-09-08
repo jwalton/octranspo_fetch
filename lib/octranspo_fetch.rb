@@ -48,7 +48,7 @@ class OCTranspo
     #       one day.
     #
     def get_route_summary_for_stop(stop, options={})
-        max_cache_time = (options[:max_cache_time] or 60*5)
+        max_cache_time = (options[:max_cache_time] or 60*60*24)
         cached_result = @route_summary_cache[stop]
         if !cached_result.nil? and ((cached_result[:time] + max_cache_time) > Time.now.to_i)
             @cache_hits += 1
