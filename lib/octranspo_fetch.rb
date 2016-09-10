@@ -90,43 +90,64 @@ class OCTranspo
     #
     # Arguments:
     #     stop: (String) The stop number.
-    #     route_no: (String) The route number.
+    #     route_no: (String) The route number, optional. If nil (default), get all routes.
     #     options[:max_cache_time]: (Integer) Maximum cache age, in seconds.  If cached data is
     #       available and is newer than this, then the cached value will be returned.  Defaults
     #       to five minutes.
     #
-    def get_next_trips_for_stop(stop, route_no, options={})
+    def get_next_trips_for_stop(stop, route_no=nil, options={})
         max_cache_time = (options[:max_cache_time] or 60*5)
 
         # Return result from cache, if available
-        cache_key = "#{stop}-#{route_no}"
+        cache_key = "#{stop}-#{route_no.to_s}"
         cached_result = @next_trips_cache[cache_key]
         if !cached_result.nil? and ((cached_result[:time] + max_cache_time) > Time.now.to_i)
             @cache_hits += 1
             return adjust_cached_trip_times(cached_result[:next_trips])
         end
         @cache_misses += 1
+        if route_no.nil?
+          parts = {
+            :method => "GetNextTripsForStopAllRoutes",
+            :args => "stopNo=#{stop}",
+            :alt_resource => "GetRouteSummaryForStop",
+            :stop_description => "t:StopDescription",
+            :route_xpath => 't:Routes/t:Route',
+            :route_error => "Error for route",
+            :route_label => "t:RouteHeading"
+          }
+        else
+          parts = {
+            :method => "GetNextTripsForStop",
+            :args => "stopNo=#{stop}&routeNo=#{route_no}",
+            :alt_resource => nil,
+            :stop_description => "t:StopLabel",
+            :route_xpath => 't:Route/t:RouteDirection',
+            :route_error => "Error for route: #{route_no}",
+            :route_label => "t:RouteLabel"
+          }
+        end
 
-        xresult = fetch "GetNextTripsForStop", "stopNo=#{stop}&routeNo=#{route_no}"
+        xresult = fetch parts[:method], parts[:args], parts[:alt_resource]
 
         result = {
             stop: get_value(xresult, "t:StopNo"),
-            stop_description: get_value(xresult, "t:StopLabel"),
+            stop_description: get_value(xresult, parts[:stop_description]),
             time: Time.now,
             routes: []
         }
 
         found_data = false
 
-        xresult.xpath('t:Route/t:RouteDirection', OCT_NS).each do |route|
-            get_error(route, "Error for route: #{route_no}")
+        xresult.xpath(parts[:route_xpath], OCT_NS).each do |route|
+            get_error(route, parts[:route_error])
 
             route_obj = {
                 cached: false,
                 route: get_value(route, "t:RouteNo"),
-                route_label: get_value(route, "t:RouteLabel"),
+                route_label: get_value(route, parts[:route_label]),
                 direction: get_value(route, "t:Direction"),
-                request_processing_time: Time.parse(get_value(route, "t:RequestProcessingTime")),
+                request_processing_time: route_no.nil? ? nil : Time.parse(get_value(route, "t:RequestProcessingTime")),
                 trips: []
             }
             route.xpath('t:Trips/t:Trip', OCT_NS).each do |trip|
@@ -217,20 +238,22 @@ class OCTranspo
 
     private
 
-    BASE_URL = "https://api.octranspo1.com/v1.1"
+    BASE_URL = "https://api.octranspo1.com/v1.2"
     OCT_NS = {'oct' => 'http://octranspo.com', 't' => 'http://tempuri.org/'}
     NEXT_TRIPS_CACHE_SIZE = 100
     ROUTE_CACHE_SIZE = 100
 
     # Fetch and parse some data from the OC-Transpo API.  Returns a nokogiri object for
     # the Result within the XML document.
-    def fetch(resource, params)
+    def fetch(resource, params, alt_resource = nil)
         @api_calls = (@api_calls + 1)
         response = RestClient.post("#{BASE_URL}/#{resource}",
             "appID=#{@app_id}&apiKey=#{@app_key}&#{params}")
-
+        if alt_resource.nil?
+          alt_resource = resource
+        end
         doc = Nokogiri::XML(response.body)
-        xresult = doc.xpath("//oct:#{resource}Result", OCT_NS)
+        xresult = doc.xpath("//oct:#{alt_resource}Result", OCT_NS)
         if xresult.length == 0
             raise "Error: No reply for #{resource}"
         end
