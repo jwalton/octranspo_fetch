@@ -238,7 +238,7 @@ class OCTranspo
 
     private
 
-    BASE_URL = "https://api.octranspo1.com/v1.2"
+    BASE_URL = "https://api.octranspo1.com/v1.3"
     OCT_NS = {'oct' => 'http://octranspo.com', 't' => 'http://tempuri.org/'}
     NEXT_TRIPS_CACHE_SIZE = 100
     ROUTE_CACHE_SIZE = 100
